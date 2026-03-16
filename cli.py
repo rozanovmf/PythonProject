@@ -22,4 +22,5 @@ def main():
 
     # Статистика
     stats_parser = subparsers.add_parser('stats', help='Статистика вспышек')
-    stats_parser.add_argument('--type', choices=['Метеор', 'Спутник', 'Искус
+    stats_parser.add_argument('--type', choices=['Метеор', 'Спутник', 'Искусственный', 'Естественный'],
+                               required=True, help='Тип вспышки')
