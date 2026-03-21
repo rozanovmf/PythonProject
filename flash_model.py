@@ -1,4 +1,6 @@
 import numpy as np
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'          # 0 = все логи, 1 = INFO отключены, 2 = WARNING отключены, 3 = ERROR только
 from tensorflow.keras import layers, models
 
 
