@@ -97,7 +97,28 @@ class FlashImageGenerator:
 
             yield img, flash_info
 
-        print(f"Сгенерировано {n_frames} кадров, вспышек: {len(flash_events)}")
+    def generate_and_save_sequence(self, n_frames=60, flash_prob=0.12, out_dir="temp_frames"):
+        """Генерирует кадры + сохраняет их + возвращает список путей"""
+        import os
+        os.makedirs(out_dir, exist_ok=True)
+
+        image_paths = []
+        flash_locations = []  # для отладки
+
+        for i, (img, flash_info) in enumerate(self.generate_sequence(
+                n_frames=n_frames, flash_prob=flash_prob, out_dir=out_dir)):
+
+            filename = os.path.join(out_dir, f"frame_{i:04d}.png")
+            image_paths.append(filename)
+            if flash_info:
+                flash_locations.append((i, flash_info))
+
+        print(f" Сгенерировано {n_frames} кадров → {out_dir}")
+        print(f" Вспышек найдено: {len(flash_locations)}")
+
+        return image_paths, flash_locations
+
+
 
 
 def demo_generator():

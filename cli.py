@@ -146,7 +146,7 @@ def main():
     model = load_model()
 
     if args.command == 'analyze':
-        analyzer.plot_light_curve(
+        analyzer.plot_light_curve_from_frames(
             flash_type=args.type,
             hours=args.hours,
             interval_min=args.interval

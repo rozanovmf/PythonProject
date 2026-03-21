@@ -43,55 +43,88 @@ def main():
     detector = SignalDetector()
     model = load_model()
 
-    while True:
-        print_menu()
-        choice = input("Ваш выбор: ")
+    while True:  # ← бесконечный цикл — меню будет возвращаться всегда
+        print("\n" + "=" * 50)
+        print("        ДЕТЕКТОР СВЕТОВЫХ ВСПЫШЕК")
+        print("=" * 50)
+        print("1 — Анализ кривых блеска")
+        print("2 — Детектирование вспышек в сигнале")
+        print("3 — Статистика вспышек")
+        print("4 — ML классификация вспышек")
+        print("5 — Генерация тестовых данных")
+        print("0 — Выход")
+
+        choice = input("Ваш выбор: ").strip()
 
         if choice == "1":
             flash_type = choose_flash_type()
             if flash_type:
-                hours = int(input("Часов наблюдения (по умолчанию 12): ") or "12")
-                analyzer.plot_light_curve(flash_type, hours=hours)
+                try:
+                    n_frames_str = input("Количество кадров для генерации (по умолчанию 60): ").strip()
+                    n_frames = int(n_frames_str) if n_frames_str else 60
 
+                    analyzer.plot_light_curve_from_frames(
+                        flash_type=flash_type,
+                        n_frames=n_frames,
+                        interval_sec=1.0
+                    )
+
+                    # Даём время посмотреть график
+                    input("\nНажмите Enter для возврата в главное меню...")
+                except ValueError:
+                    print("Ошибка: введите число")
+                except Exception as e:
+                    print(f"Ошибка: {e}")
+                    input("\nНажмите Enter для возврата...")
         elif choice == "2":
             flash_type = choose_flash_type()
             if flash_type:
-                # Генерируем тестовые данные
-                times, intensities, _ = analyzer.generate_flash_data(flash_type, hours=6)
-                print("Анализ сигнала...")
-                detector.plot_signal_analysis(intensities, times=times)
-
+                try:
+                    n_frames_str = input("Количество кадров для анализа (по умолчанию 60): ").strip()
+                    n_frames = int(n_frames_str) if n_frames_str else 60
+                    analyzer.plot_signal_with_frames(
+                        flash_type=flash_type,
+                        n_frames=n_frames,
+                        interval_sec=1.0
+                    )
+                except ValueError:
+                    print("Ошибка: введите число")
+                except Exception as e:
+                    print(f"Ошибка: {e}")
+                    input("\nНажмите Enter...")
         elif choice == "3":
             flash_type = choose_flash_type()
             if flash_type:
-                days = int(input("Дней наблюдения (по умолчанию 3): ") or "3")
+                days = int(input("Количество дней (по умолчанию 3): ") or 3)
                 analyzer.plot_flash_statistics(flash_type, days=days)
+                input("\nНажмите Enter для возврата...")
 
         elif choice == "4":
             flash_type = choose_flash_type()
             if flash_type:
-                # Генерируем данные для классификации
                 _, intensities, _ = analyzer.generate_flash_data(flash_type, hours=2)
                 result, probabilities = model.predict_flash_type(intensities[:100])
-                print(f"\nРезультат классификации: {result}")
-                print("Вероятности:")
-                class_names = ['Фон', 'Короткая', 'Длинная']
-                for name, prob in zip(class_names, probabilities):
+                print(f"\nРезультат: {result}")
+                for name, prob in zip(['Фон', 'Короткая', 'Длинная'], probabilities):
                     print(f"  {name}: {prob:.3f}")
+                input("\nНажмите Enter...")
 
         elif choice == "5":
             from generator import demo_generator
-            print("Генерация тестовых изображений...")
+            print("Генерация демонстрации...")
             demo_generator()
-            print("Тестовые данные сохранены в папку 'demo_flash_frames'")
+            print("Готово. Папка: demo_flash_frames")
+            input("\nНажмите Enter...")
 
         elif choice == "0":
             print("Выход...")
-            time.sleep(1)
-            sys.exit(0)
+            break
 
         else:
             print("Некорректный выбор.")
+            time.sleep(1)
+
+        print()  # пустая строка перед следующим меню
 
 
 if __name__ == "__main__":
