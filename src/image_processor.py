@@ -2,6 +2,27 @@ import cv2
 import numpy as np
 from scipy import ndimage
 
+# Цвета и короткие английские метки
+OBJECT_COLORS = {
+    "звезда (точечная)": (255, 0, 0),      # синий
+    "звезда с дифракцией / кластер": (0, 255, 0),      # зелёный
+    "галактика / крупный кластер": (0, 165, 255),      # оранжевый
+    "вспышка / спутник / мусор / артефакт": (0, 0, 255),      # красный
+    "вспышка (вытянутый)": (0, 255, 255),      # циан
+    "мусор / артефакт": (128, 0, 128),      # фиолетовый
+    "неизвестно": (200, 200, 200)      # светло-серый
+}
+
+LABEL_MAP = {
+    "звезда (точечная)": "Point Star",
+    "звезда с дифракцией / кластер": "Diffraction Star",
+    "галактика / крупный кластер": "Galaxy/Cluster",
+    "вспышка / спутник / мусор / артефакт": "Flash/Debris",
+    "вспышка (вытянутый)": "Elongated Flash",
+    "мусор / артефакт": "Artifact",
+    "неизвестно": "Unknown"
+}
+
 
 class ImageProcessor:
     """
@@ -16,115 +37,136 @@ class ImageProcessor:
         """
         Загрузка и предобработка изображения
         """
-        img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-        if img is None:
-            raise FileNotFoundError(f"Не удалось загрузить изображение: {image_path}")
-
-        # Нормализация
-        img_normalized = img.astype(np.float32) / 255.0
-
-        # Гауссово размытие для уменьшения шума
-        img_blurred = cv2.GaussianBlur(img_normalized, (5, 5), 0)
-
-        return img_blurred
+        img_bgr = cv2.imread(image_path)
+        if img_bgr is None:
+            raise FileNotFoundError(f"Не удалось загрузить: {image_path}")
+        color_original = img_bgr.copy()
+        if len(img_bgr.shape) == 3:
+            gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+        else:
+            gray = img_bgr.astype(np.float32) / 255.0
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        return blurred, color_original
 
     def initialize_background(self, image):
-        """
-        Инициализация модели фона
-        """
+        if len(image.shape) == 3:
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
         self.background_model = image.copy()
 
     def update_background(self, image):
+        if len(image.shape) == 3:
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+        self.background_model = (1 - self.learning_rate) * self.background_model + self.learning_rate * image
+
+    def detect_foreground(self, image, threshold=0.04):
         """
-        Обновление модели фона (running average)
+        image должен быть серым (2D, 0–1)
         """
+        if len(image.shape) == 3:
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+
         if self.background_model is None:
             self.initialize_background(image)
-        else:
-            self.background_model = (1 - self.learning_rate) * self.background_model + \
-                                    self.learning_rate * image
+            return np.zeros_like(image, dtype=bool), np.zeros_like(image)
 
-    def detect_foreground(self, image, threshold=0.1):
-        """
-        Детектирование переднего плана (потенциальных вспышек)
-        """
-        if self.background_model is None:
-            self.initialize_background(image)
-
-        # Разность с фоном
         diff = np.abs(image - self.background_model)
+        foreground_mask = diff > (threshold * 0.8)
 
-        # Бинаризация
-        foreground_mask = diff > threshold
-
-        # Морфологические операции для очистки
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        foreground_mask = cv2.morphologyEx(foreground_mask.astype(np.uint8),
-                                           cv2.MORPH_OPEN, kernel)
-        foreground_mask = cv2.morphologyEx(foreground_mask,
-                                           cv2.MORPH_CLOSE, kernel)
+        foreground_mask = cv2.morphologyEx(foreground_mask.astype(np.uint8), cv2.MORPH_OPEN, kernel)
+        foreground_mask = cv2.morphologyEx(foreground_mask, cv2.MORPH_CLOSE, kernel)
 
-        return foreground_mask, diff
+        return foreground_mask.astype(bool), diff
 
-    def find_flash_candidates(self, foreground_mask, min_size=5):
-        """
-        Поиск кандидатов во вспышки
-        """
-        # Поиск связных компонентов
-        labeled, num_features = ndimage.label(foreground_mask)
-
+    def find_flash_candidates(self, foreground_mask, min_size=3):
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+            foreground_mask.astype(np.uint8), connectivity=8
+        )
         candidates = []
-        for i in range(1, num_features + 1):
-            component_mask = labeled == i
-            if np.sum(component_mask) >= min_size:
-                # Вычисляем свойства компонента
-                y_coords, x_coords = np.where(component_mask)
-                center_y, center_x = np.mean(y_coords), np.mean(x_coords)
-                area = np.sum(component_mask)
-                intensity = np.sum(component_mask)
+        for i in range(1, num_labels):
+            area = stats[i, cv2.CC_STAT_AREA]
+            if area < min_size:
+                continue
 
-                candidates.append({
-                    'center': (center_x, center_y),
-                    'area': area,
-                    'intensity': intensity,
-                    'bbox': (np.min(x_coords), np.min(y_coords),
-                             np.max(x_coords), np.max(y_coords))
-                })
+            x, y, w, h = stats[i, cv2.CC_STAT_LEFT:cv2.CC_STAT_LEFT + 4]
+            aspect_ratio = max(w, h) / min(w, h) if min(w, h) > 0 else 1.0
+
+            if area <= 12:
+                obj_type = "звезда (точечная)"
+            elif area <= 80:
+                obj_type = "звезда с дифракцией / кластер"
+            elif area <= 400:
+                obj_type = "галактика / крупный кластер"
+            else:
+                obj_type = "вспышка / спутник / мусор / артефакт"
+
+            if aspect_ratio > 2.5:
+                obj_type = "вспышка (вытянутый)"
+
+            candidates.append({
+                'bbox': (x, y, x + w, y + h),
+                'area': area,
+                'centroid': centroids[i],
+                'aspect_ratio': aspect_ratio,
+                'type': obj_type
+            })
 
         return candidates
 
-    def process_image_sequence(self, image_paths):
-        """
-        Обработка последовательности изображений для поиска вспышек
-        """
+    def process_image_sequence(self, image_paths, threshold=0.1):
         all_detections = []
-
         for i, image_path in enumerate(image_paths):
             try:
-                # Загрузка и предобработка
-                image = self.load_and_preprocess(image_path)
-
-                # Детектирование переднего плана
-                foreground_mask, diff_map = self.detect_foreground(image)
-
-                # Поиск кандидатов
+                processed, color_original = self.load_and_preprocess(image_path)
+                foreground_mask, diff_map = self.detect_foreground(processed, threshold=threshold)
                 candidates = self.find_flash_candidates(foreground_mask)
-
-                # Обновление фона
-                self.update_background(image)
-
+                self.update_background(processed)
                 all_detections.append({
                     'frame': i,
                     'image_path': image_path,
                     'candidates': candidates,
                     'foreground_mask': foreground_mask,
-                    'diff_map': diff_map
+                    'diff_map': diff_map,
+                    'color_original': color_original
                 })
-
-                print(f"Обработан кадр {i + 1}/{len(image_paths)}: найдено {len(candidates)} кандидатов")
-
+                print(f"Обработан кадр {i+1}/{len(image_paths)}: {len(candidates)} кандидатов")
             except Exception as e:
-                print(f"Ошибка обработки {image_path}: {e}")
+                print(f"Ошибка {image_path}: {e}")
                 continue
-
         return all_detections
+
+    def draw_bounding_boxes(self, color_img, candidates):
+        """
+        Рисует рамки разного цвета в зависимости от типа кандидата.
+        """
+        img = color_img.copy()
+
+        for cand in candidates:
+            x1, y1, x2, y2 = cand['bbox']
+            obj_type = cand.get('type', 'неизвестно') or 'неизвестно'
+
+            color = OBJECT_COLORS.get(obj_type, (128, 128, 128))
+            display_label = LABEL_MAP.get(obj_type, "Unknown")
+
+            thickness = 3 if "вспышка" in obj_type else 2
+
+            cv2.rectangle(
+                img,
+                (int(x1), int(y1)),
+                (int(x2), int(y2)),
+                color,
+                thickness=thickness
+            )
+
+            cv2.putText(
+                img,
+                display_label,
+                (int(x1), int(y1) - 5),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                color,
+                1,
+                cv2.LINE_AA
+            )
+
+        return img

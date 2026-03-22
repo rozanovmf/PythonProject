@@ -1,142 +1,131 @@
 import numpy as np
 import cv2
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 
 
 class FlashImageGenerator:
     """
-    Генератор синтетических изображений со вспышками
+    Улучшенный генератор с реалистичными типами вспышек
     """
 
     def __init__(self, img_size=(256, 256), background=1000.0, noise_level=10.0):
         self.img_size = img_size
         self.background = background
         self.noise_level = noise_level
+        self.active_events = []  # список активных движущихся вспышек
 
-    def generate_starfield(self, n_stars=50):
-        """
-        Генерирует звездное поле
-        """
-        img = np.ones(self.img_size) * self.background
-
+    def generate_starfield(self, n_stars=80):
+        img = np.ones(self.img_size, dtype=np.float32) * self.background
         for _ in range(n_stars):
             x = np.random.randint(0, self.img_size[1])
             y = np.random.randint(0, self.img_size[0])
-            flux = np.random.uniform(500, 2000)
-            fwhm = np.random.uniform(1.5, 3.0)
-
+            flux = np.random.uniform(800, 2500)
+            fwhm = np.random.uniform(1.8, 3.2)
             self._add_star(img, x, y, flux, fwhm)
-
         return img
 
     def _add_star(self, img, x, y, flux, fwhm=2.5):
-        """Добавляет звезду на изображение"""
         sigma = fwhm / 2.355
         ys, xs = np.indices(img.shape)
         g = flux * np.exp(-0.5 * ((xs - x) ** 2 + (ys - y) ** 2) / sigma ** 2)
         img += g
 
-    def add_flash(self, img, x, y, flash_intensity=5000, flash_duration=1):
-        """
-        Добавляет вспышку на изображение
-        """
-        # Создаем ядро вспышки (может быть разным для разных типов вспышек)
-        flash_types = [
-            lambda xx, yy: np.exp(-0.5 * ((xx - x) ** 2 + (yy - y) ** 2) / 4.0),  # Точечная
-            lambda xx, yy: np.exp(-0.5 * ((xx - x) ** 2 + (yy - y) ** 2) / 8.0),  # Расширенная
-            lambda xx, yy: np.exp(-0.5 * (np.abs(xx - x) + np.abs(yy - y)) / 3.0)  # Ромбовидная
-        ]
+    # ==================== НОВЫЕ РЕАЛИСТИЧНЫЕ ВСПЫШКИ ====================
+    def _add_meteor(self, img, x, y, intensity=8000, length=25):
+        """Метеор: яркий след с затуханием"""
+        angle = np.random.uniform(0, np.pi * 2)
+        dx = length * np.cos(angle)
+        dy = length * np.sin(angle)
+        for i in range(length):
+            px = int(x + i * dx / length)
+            py = int(y + i * dy / length)
+            if 0 <= px < img.shape[1] and 0 <= py < img.shape[0]:
+                alpha = 1 - i / length
+                img[py, px] += intensity * alpha * np.random.uniform(0.9, 1.1)
 
-        kernel = flash_types[np.random.randint(0, len(flash_types))]
-        ys, xs = np.indices(img.shape)
-        flash = flash_intensity * kernel(xs, ys)
+    def _add_satellite(self, img, x, y, intensity=3500):
+        """Спутник: медленное движение, лёгкое мерцание"""
+        img[int(y), int(x)] += intensity
+        # небольшой "хвост" от экспозиции
+        img[int(y), int(x) + 1] += intensity * 0.6
 
-        img += flash
-        return img
+    def _add_airplane(self, img, x, y, intensity=4500):
+        """Самолёт: красные/зелёные огни + след"""
+        img[int(y), int(x)] += intensity
+        # навигационные огни
+        img[int(y) + 2, int(x) + 3] += intensity * 0.8  # зелёный
+        img[int(y) - 2, int(x) - 3] += intensity * 0.8  # красный
 
-    def generate_sequence(self, n_frames=100, flash_prob=0.05, out_dir=None):
-        """
-        Генерирует последовательность изображений со случайными вспышками
-        """
-        if out_dir:
-            os.makedirs(out_dir, exist_ok=True)
+    def _add_lightning(self, img, x, y, intensity=12000):
+        """Молния: ветвистая, очень яркая и короткая"""
+        for _ in range(8):  # несколько ветвей
+            cx, cy = x, y
+            for _ in range(12):
+                cx += np.random.randint(-4, 5)
+                cy += np.random.randint(-8, 3)
+                if 0 <= cx < img.shape[1] and 0 <= cy < img.shape[0]:
+                    img[cy, cx] += intensity * np.random.uniform(0.6, 1.0)
 
+    # ==================== ОСНОВНОЙ ГЕНЕРАТОР ====================
+    def generate_and_save_sequence(self, n_frames=60, flash_prob=0.12,
+                                   flash_type="random", out_dir="temp_frames"):
+        os.makedirs(out_dir, exist_ok=True)
         base_image = self.generate_starfield()
-        flash_events = []
+        image_paths = []
+        flash_locations = []
 
         for i in range(n_frames):
-            # Создаем копию базового изображения
             img = base_image.copy()
-
-            # Добавляем шум
             img += np.random.normal(0, self.noise_level, self.img_size)
 
-            flash_info = None
+            # Обновляем активные события (движение)
+            for event in self.active_events[:]:
+                event['life'] -= 1
+                if event['life'] <= 0:
+                    self.active_events.remove(event)
+                    continue
+                # двигаем
+                event['x'] += event.get('vx', 0)
+                event['y'] += event.get('vy', 0)
 
-            # Случайно добавляем вспышку
-            if np.random.random() < flash_prob:
-                flash_x = np.random.randint(50, self.img_size[1] - 50)
-                flash_y = np.random.randint(50, self.img_size[0] - 50)
-                flash_intensity = np.random.uniform(3000, 10000)
+            # Новая вспышка
+            if np.random.random() < flash_prob or flash_type != "random":
+                typ = flash_type if flash_type != "random" else np.random.choice(
+                    ['meteor', 'satellite', 'airplane', 'lightning'])
 
-                img = self.add_flash(img, flash_x, flash_y, flash_intensity)
-                flash_info = {
-                    'frame': i,
-                    'x': flash_x,
-                    'y': flash_y,
-                    'intensity': flash_intensity
-                }
-                flash_events.append(flash_info)
+                x = np.random.randint(30, self.img_size[1] - 30)
+                y = np.random.randint(30, self.img_size[0] - 30)
 
-            # Сохраняем изображение
-            if out_dir:
-                img_uint16 = np.clip(img, 0, 65535).astype(np.uint16)
-                filename = os.path.join(out_dir, f"frame_{i:04d}.png")
-                cv2.imwrite(filename, img_uint16)
+                if typ == 'meteor':
+                    self._add_meteor(img, x, y)
+                    # добавляем движение на 3-6 кадров
+                    self.active_events.append({
+                        'x': x, 'y': y, 'life': np.random.randint(3, 7),
+                        'vx': np.random.uniform(-4, -1), 'vy': np.random.uniform(-1, 1)
+                    })
+                elif typ == 'satellite':
+                    self._add_satellite(img, x, y)
+                    self.active_events.append({
+                        'x': x, 'y': y, 'life': np.random.randint(8, 15),
+                        'vx': np.random.uniform(-1.5, -0.5)
+                    })
+                elif typ == 'airplane':
+                    self._add_airplane(img, x, y)
+                else:  # lightning
+                    self._add_lightning(img, x, y)
 
-            yield img, flash_info
+                flash_locations.append((i, typ))
 
-    def generate_and_save_sequence(self, n_frames=60, flash_prob=0.12, out_dir="temp_frames"):
-        """Генерирует кадры + сохраняет их + возвращает список путей"""
-        import os
-        os.makedirs(out_dir, exist_ok=True)
-
-        image_paths = []
-        flash_locations = []  # для отладки
-
-        for i, (img, flash_info) in enumerate(self.generate_sequence(
-                n_frames=n_frames, flash_prob=flash_prob, out_dir=out_dir)):
-
+            # Сохранение
+            img_uint16 = np.clip(img, 0, 65535).astype(np.uint16)
             filename = os.path.join(out_dir, f"frame_{i:04d}.png")
+            cv2.imwrite(filename, img_uint16)
             image_paths.append(filename)
-            if flash_info:
-                flash_locations.append((i, flash_info))
 
-        print(f" Сгенерировано {n_frames} кадров → {out_dir}")
-        print(f" Вспышек найдено: {len(flash_locations)}")
-
+        print(f"Сгенерировано {n_frames} кадров ({flash_type}) → {out_dir}")
+        print(f"Вспышек: {len(flash_locations)}")
         return image_paths, flash_locations
-
-
-
-
-def demo_generator():
-    """Демонстрация работы генератора"""
-    generator = FlashImageGenerator(img_size=(200, 200))
-
-    print("Генерация демонстрационной последовательности...")
-    frames = list(generator.generate_sequence(
-        n_frames=50,
-        flash_prob=0.1,
-        out_dir='demo_flash_frames'
-    ))
-
-    flash_count = sum(1 for _, flash in frames if flash is not None)
-    print(f"Создано {len(frames)} кадров, {flash_count} со вспышками")
-
-    return frames
-
 
 if __name__ == '__main__':
     demo_generator()

@@ -52,6 +52,7 @@ def main():
         print("3 — Статистика вспышек")
         print("4 — ML классификация вспышек")
         print("5 — Генерация тестовых данных")
+        print("6 — Анализ реальной последовательности (видео/FITS/папка)")
         print("0 — Выход")
 
         choice = input("Ваш выбор: ").strip()
@@ -115,7 +116,20 @@ def main():
             demo_generator()
             print("Готово. Папка: demo_flash_frames")
             input("\nНажмите Enter...")
-
+        elif choice == "6":
+            path = input("Путь к папке/видео/FITS: ").strip()
+            while True:
+                limit_str = input("Порог яркости для выделения объектов (0.00 – 1.00, рекомендуем 0.02–0.15): ").strip()
+                try:
+                    limit = float(limit_str)
+                    if 0.0 <= limit <= 1.0:
+                        break
+                    else:
+                        print("Порог должен быть числом от 0.0 до 1.0")
+                except ValueError:
+                    print("Введите число (например: 0.04 или 0.08)")
+                # Передаём порог в метод
+            analyzer.analyze_real_sequence(path, threshold=limit)
         elif choice == "0":
             print("Выход...")
             break

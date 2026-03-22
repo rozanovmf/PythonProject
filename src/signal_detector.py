@@ -1,6 +1,8 @@
 import numpy as np
 from scipy import signal
 from scipy.fft import fft, fftfreq
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 
@@ -83,69 +85,27 @@ class SignalDetector:
 
     def plot_signal_analysis(self, data, times=None, sampling_rate=1.0):
         """
-        Полный анализ сигнала с графиками
+        Анализ сигнала БЕЗ отрисовки графиков — только расчёт и вывод в консоль
         """
+        data = np.asarray(data)
+        n = len(data)
+
         if times is None:
-            times = np.arange(len(data))
+            times = np.arange(n)
 
-        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-
-        # 1. Исходный сигнал с детектированными пиками
+        # Расчёт пиков (это остаётся)
         peaks_thresh, threshold = self.find_peaks_threshold(data)
         peaks_deriv = self.find_peaks_derivative(data)
 
-        axes[0, 0].plot(times, data, 'b-', alpha=0.7, label='Сигнал')
-        axes[0, 0].axhline(threshold, color='r', linestyle='--',
-                           label=f'Порог ({threshold:.2f})')
-        axes[0, 0].scatter([times[p] for p in peaks_thresh], [data[p] for p in peaks_thresh],
-                           color='red', s=50, zorder=5, label='Пики (порог)')
-        axes[0, 0].scatter([times[p] for p in peaks_deriv], [data[p] for p in peaks_deriv],
-                           color='orange', s=30, zorder=5, label='Пики (производная)')
-        axes[0, 0].set_title('Детектирование пиков')
-        axes[0, 0].set_xlabel('Время')
-        axes[0, 0].set_ylabel('Интенсивность')
-        axes[0, 0].legend()
-        axes[0, 0].grid(alpha=0.3)
-
-        # 2. Производная
-        derivative = np.diff(data)
-        axes[0, 1].plot(times[1:], derivative, 'g-', alpha=0.7)
-        axes[0, 1].axhline(0.1, color='r', linestyle='--', label='Порог производной')
-        axes[0, 1].axhline(-0.1, color='r', linestyle='--')
-        axes[0, 1].set_title('Производная сигнала')
-        axes[0, 1].set_xlabel('Время')
-        axes[0, 1].set_ylabel('Производная')
-        axes[0, 1].legend()
-        axes[0, 1].grid(alpha=0.3)
-
-        # 3. Частотный анализ
-        xf, yf, dom_freq, dom_power = self.analyze_frequency_domain(data, sampling_rate)
-        axes[1, 0].plot(xf, yf, 'purple', alpha=0.7)
-        axes[1, 0].axvline(dom_freq, color='red', linestyle='--',
-                           label=f'Доминирующая: {dom_freq:.3f} Гц')
-        axes[1, 0].set_title('Частотный спектр')
-        axes[1, 0].set_xlabel('Частота (Гц)')
-        axes[1, 0].set_ylabel('Мощность')
-        axes[1, 0].legend()
-        axes[1, 0].grid(alpha=0.3)
-        axes[1, 0].set_xlim(0, min(1.0, xf[-1]))
-
-        # 4. Статистика пиков
-        methods = ['Пороговый', 'Производная']
-        counts = [len(peaks_thresh), len(peaks_deriv)]
-
-        axes[1, 1].bar(methods, counts, color=['red', 'orange'], alpha=0.7)
-        axes[1, 1].set_title('Количество обнаруженных пиков')
-        axes[1, 1].set_ylabel('Количество')
-
-        for i, count in enumerate(counts):
-            axes[1, 1].text(i, count + 0.1, str(count), ha='center')
-
-        plt.tight_layout()
-        plt.show()
-
+        # Выводим только текстовые результаты
         print(f"Обнаружено пиков (порог): {len(peaks_thresh)}")
         print(f"Обнаружено пиков (производная): {len(peaks_deriv)}")
-        print(f"Доминирующая частота: {dom_freq:.3f} Гц")
 
+        if n >= 8:
+            xf, yf, dom_freq, dom_power = self.analyze_frequency_domain(data, sampling_rate)
+            print(f"Доминирующая частота: {dom_freq:.3f} Гц")
+        else:
+            print("Частотный анализ пропущен (недостаточно данных)")
+
+        # Возвращаем то же, что и раньше — чтобы остальной код не сломался
         return peaks_thresh, peaks_deriv
