@@ -1,12 +1,10 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from datetime import datetime, timedelta
-import pandas as pd
-from src.image_processor import ImageProcessor
-from src.signal_detector import SignalDetector
 import os
 import cv2
 from collections import Counter
+from src.image_processor import ImageProcessor
+from src.signal_detector import SignalDetector
 
 
 class FlashAnalyzer:
@@ -29,8 +27,10 @@ class FlashAnalyzer:
         Анализ реальной последовательности.
         threshold — порог яркости для выделения объектов
         """
-        print(f"Загружаем реальную последовательность: {source_path}")
-        print(f"Используется порог яркости: {threshold:.4f}")
+        print(f"\n{'=' * 60}")
+        print(f"Начинаем анализ: {source_path}")
+        print(f"Порог: {threshold:.4f}")
+        print(f"{'=' * 60}\n")
 
         # Очистка старых аннотаций
         output_dir = "annotated_frames"
@@ -40,133 +40,180 @@ class FlashAnalyzer:
                 if os.path.isfile(file_path):
                     try:
                         os.remove(file_path)
-                        print(f"Удалён старый файл: {old_file}")
-                    except Exception as e:
-                        print(f"Не удалось удалить {old_file}: {e}")
+                    except:
+                        pass
         os.makedirs(output_dir, exist_ok=True)
 
         try:
             image_paths, frame_arrays = self.loader.load_sequence(source_path, n_frames)
-            print(f"Успешно загружено {len(frame_arrays)} кадров")
+            print(f"✅ Загружено {len(frame_arrays)} кадров")
+
+            # Для отладки: сохраняем первый кадр для визуальной проверки
+            if frame_arrays:
+                debug_path = os.path.join(output_dir, "debug_original_frame.png")
+                cv2.imwrite(debug_path, (frame_arrays[0] * 255).astype(np.uint8))
+                print(f"📷 Сохранён оригинальный кадр для отладки: {debug_path}")
+
         except Exception as e:
-            print(f"Ошибка загрузки: {e}")
+            print(f"❌ Ошибка загрузки: {e}")
             return None, None
 
         processor = ImageProcessor()
+
+        # Для одиночного изображения используем специальный режим
+        if len(frame_arrays) == 1:
+            print("🔧 Режим анализа одиночного изображения")
+            return self._analyze_single_image(image_paths[0], frame_arrays[0], processor, threshold, output_dir)
+
+        # Для последовательности используем обычный режим
         detections = processor.process_image_sequence(image_paths, threshold=threshold)
+        return self._process_detections(detections, processor, output_dir, threshold)
 
-        print(f"\nСохраняем аннотированные кадры по типам в: {output_dir}")
-        print(f"Порог яркости: {threshold:.4f}\n")
+    def _analyze_single_image(self, image_path, image_array, processor, threshold, output_dir):
+        """
+        Специальный метод для анализа одиночного изображения
+        """
+        print(f"🔍 Анализ одиночного изображения...")
 
-        # Словарь для хранения изображений по типам
-        type_to_images = {
-            "звезда (точечная)": [],
-            "звезда с дифракцией / кластер": [],
-            "галактика / крупный кластер": [],
-            "вспышка / спутник / мусор / артефакт": [],
-            "вспышка (вытянутый)": [],
-            "мусор / артефакт": [],
-            "неизвестно": []
-        }
+        # Загружаем цветное изображение
+        color_img = cv2.imread(image_path)
+        if color_img is None:
+            print("❌ Не удалось загрузить цветное изображение")
+            return None, None
+
+        # Применяем различные методы детекции объектов
+
+        # Метод 1: Пороговая обработка (простой метод)
+        gray = cv2.cvtColor(color_img, cv2.COLOR_BGR2GRAY)
+        gray_norm = gray.astype(np.float32) / 255.0
+
+        # Адаптивный порог
+        mean_val = np.mean(gray_norm)
+        std_val = np.std(gray_norm)
+        adaptive_threshold = mean_val + threshold * std_val
+
+        print(f"📊 Статистика изображения:")
+        print(f"   Средняя яркость: {mean_val:.3f}")
+        print(f"   Стандартное отклонение: {std_val:.3f}")
+        print(f"   Адаптивный порог: {adaptive_threshold:.3f}")
+
+        # Создаём маску ярких областей
+        bright_mask = gray_norm > adaptive_threshold
+
+        # Морфологическая обработка
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        bright_mask = cv2.morphologyEx(bright_mask.astype(np.uint8), cv2.MORPH_OPEN, kernel)
+        bright_mask = cv2.morphologyEx(bright_mask, cv2.MORPH_CLOSE, kernel)
+
+        # Находим компоненты связности
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(bright_mask, connectivity=8)
+
+        print(f"🔍 Найдено компонент: {num_labels - 1}")
+
+        candidates = []
+        for i in range(1, num_labels):
+            area = stats[i, cv2.CC_STAT_AREA]
+            if area < 3:  # Минимальная площадь
+                continue
+
+            x = stats[i, cv2.CC_STAT_LEFT]
+            y = stats[i, cv2.CC_STAT_TOP]
+            w = stats[i, cv2.CC_STAT_WIDTH]
+            h = stats[i, cv2.CC_STAT_HEIGHT]
+
+            aspect_ratio = max(w, h) / min(w, h) if min(w, h) > 0 else 1.0
+
+            # Классификация
+            if area <= 15:
+                obj_type = "звезда (точечная)"
+            elif area <= 80:
+                obj_type = "звезда с дифракцией / кластер"
+            elif area <= 300:
+                obj_type = "галактика / крупный кластер"
+            else:
+                obj_type = "вспышка / спутник / мусор / артефакт"
+
+            if aspect_ratio > 2.0:
+                obj_type = "вспышка (вытянутый)"
+
+            candidates.append({
+                'bbox': (x, y, x + w, y + h),
+                'area': area,
+                'centroid': (centroids[i][0], centroids[i][1]),
+                'aspect_ratio': aspect_ratio,
+                'type': obj_type
+            })
+
+            print(f"   Объект {i}: площадь={area}, тип={obj_type}, позиция=({x},{y})")
+
+        # Рисуем рамки
+        if candidates:
+            annotated_img = processor.draw_bounding_boxes(color_img, candidates)
+            out_path = os.path.join(output_dir, "annotated_result.jpg")
+            cv2.imwrite(out_path, annotated_img)
+            print(f"✅ Сохранён результат: {out_path}")
+
+            # Сохраняем маску для отладки
+            mask_path = os.path.join(output_dir, "debug_mask.jpg")
+            cv2.imwrite(mask_path, bright_mask * 255)
+            print(f"🔧 Сохранена маска для отладки: {mask_path}")
+
+            stats = {
+                "total_objects": len(candidates),
+                "by_type": Counter(c['type'] for c in candidates),
+                "frames_processed": 1
+            }
+
+            return [out_path], stats
+        else:
+            print("⚠️ Объекты не найдены")
+
+            # Сохраняем маску для отладки даже если объекты не найдены
+            mask_path = os.path.join(output_dir, "debug_mask_empty.jpg")
+            cv2.imwrite(mask_path, bright_mask * 255)
+            print(f"🔧 Сохранена пустая маска: {mask_path}")
+
+            # Сохраняем изображение с отладочной информацией
+            debug_img = color_img.copy()
+            cv2.putText(debug_img, f"Threshold: {threshold:.3f}", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            cv2.putText(debug_img, f"Mean: {mean_val:.3f}, Std: {std_val:.3f}", (10, 60),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            debug_path = os.path.join(output_dir, "debug_info.jpg")
+            cv2.imwrite(debug_path, debug_img)
+
+            return None, None
+
+    def _process_detections(self, detections, processor, output_dir, threshold):
+        """
+        Обработка результатов детекции для последовательности кадров
+        """
+        if not detections:
+            print("❌ Нет данных для обработки")
+            return None, None
+
+        print(f"\n📊 Обработка {len(detections)} кадров...")
+
+        saved_files = []
+        type_counts_total = Counter()
 
         for det in detections:
             frame_idx = det['frame']
             color_img = det['color_original'].copy()
-
-            # Получаем кандидатов из детекции
             candidates = det.get('candidates', [])
-            det['candidates'] = candidates
 
             if candidates:
-                # Группируем кандидатов по типу
-                candidates_by_type = {}
-                for cand in candidates:
-                    obj_type = cand.get('type', 'неизвестно')
-                    if obj_type not in candidates_by_type:
-                        candidates_by_type[obj_type] = []
-                    candidates_by_type[obj_type].append(cand)
-
-                # Для каждого типа рисуем свои объекты
-                for obj_type, type_cands in candidates_by_type.items():
-                    annotated_img = processor.draw_bounding_boxes(
-                        color_img.copy(),
-                        type_cands
-                    )
-                    # Добавляем в список для данного типа
-                    type_to_images[obj_type].append((frame_idx, annotated_img))
-
-                # Вывод статистики по кадру
-                frame_types = Counter(c['type'] for c in candidates)
-                print(f"  Кадр {frame_idx:4}: ", end="")
-                print(", ".join(f"{t}: {c}" for t, c in frame_types.items()))
-
-        # Сохраняем отдельные файлы по типам
-        saved_files = []
-        for obj_type, images_list in type_to_images.items():
-            if not images_list:
-                continue
-
-            # Берём последний кадр с этим типом
-            last_idx, last_img = images_list[-1]
-
-            # Создаём безопасное имя файла
-            safe_name = obj_type.replace(' ', '_').replace('/', '_').replace('\\', '_')
-            filename = f"annotated_{safe_name}.jpg"
-            out_path = os.path.join(output_dir, filename)
-
-            cv2.imwrite(out_path, last_img)
-            saved_files.append(out_path)
-            print(f"Сохранено: {filename} ({len(images_list)} кадров с этим типом)")
-
-        # Сохраняем также все кадры с аннотациями
-        for det in detections:
-            frame_idx = det['frame']
-            if det.get('candidates'):
-                annotated_all = processor.draw_bounding_boxes(
-                    det['color_original'].copy(),
-                    det['candidates']
-                )
+                annotated_img = processor.draw_bounding_boxes(color_img, candidates)
                 out_path = os.path.join(output_dir, f"frame_{frame_idx:04d}_annotated.jpg")
-                cv2.imwrite(out_path, annotated_all)
+                cv2.imwrite(out_path, annotated_img)
                 saved_files.append(out_path)
 
-        # Статистика
-        type_counts_total = Counter()
-        for det in detections:
-            candidates = det.get('candidates', [])
-            if candidates:
-                type_counts_total.update(c['type'] for c in candidates)
+                # Статистика
+                for cand in candidates:
+                    obj_type = cand.get('type', 'неизвестно')
+                    type_counts_total[obj_type] += 1
 
-        print("\n" + "=" * 50)
-        print("Статистика обнаруженных объектов")
-        print("=" * 50)
-        if not type_counts_total:
-            print("Объекты не найдены совсем")
-        else:
-            for typ, cnt in sorted(type_counts_total.items(), key=lambda x: x[1], reverse=True):
-                print(f"{typ:35} : {cnt:6} шт.")
-
-        # График анализа сигнала (только если есть данные)
-        if len(detections) > 0:
-            intensities = []
-            for det in detections:
-                diff_map = det.get('diff_map')
-                if diff_map is not None:
-                    intensities.append(np.mean(diff_map))
-                else:
-                    intensities.append(0)
-
-            times = list(range(len(intensities)))
-
-            if len(intensities) >= 8:
-                detector = SignalDetector()
-                try:
-                    detector.plot_signal_analysis(intensities, times=times)
-                    print("\nГрафик анализа сигнала сохранён как 'signal_analysis.png'")
-                except Exception as e:
-                    print(f"Не удалось построить график: {e}")
-            else:
-                print(f"\nВнимание: слишком мало кадров ({len(intensities)}) для частотного анализа.")
+                print(f"   Кадр {frame_idx}: найдено {len(candidates)} объектов")
 
         stats = {
             "total_objects": sum(type_counts_total.values()),
@@ -174,5 +221,9 @@ class FlashAnalyzer:
             "frames_processed": len(detections)
         }
 
-        print(f"\nГотово. Аннотированные кадры сохранены в: {os.path.abspath(output_dir)}")
-        return saved_files, stats
+        print(f"\n✅ Готово. Найдено объектов: {stats['total_objects']}")
+
+        if saved_files:
+            return saved_files, stats
+        else:
+            return None, None

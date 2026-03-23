@@ -2,6 +2,8 @@ import os
 from pathlib import Path
 from typing import Final
 import tempfile
+import cv2
+import numpy as np
 
 from aiogram import Router, F
 from aiogram.filters import CommandStart
@@ -39,38 +41,82 @@ async def got_photo(message: Message, state: FSMContext):
     with open(temp_path, "wb") as f:
         f.write(bytes_data.read())
 
-    await state.update_data(temp_photo_path=temp_path)
+    # Проверяем, что изображение загрузилось корректно
+    test_img = cv2.imread(temp_path)
+    if test_img is None:
+        await message.answer("❌ Не удалось прочитать изображение. Попробуйте другое фото.")
+        return
 
-    keyboard = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="0.01")]],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-        input_field_placeholder="Введите число от 0.01 до 1.0"
-    )
-
+    h, w = test_img.shape[:2]
     await message.answer(
-        "📸 Фото получено!\n\n"
-        "Введите порог яркости для выделения объектов от 0.01 до 1.0\n"
-        "💡 <b>Рекомендация:</b> 0.01-0.05 для тёмного неба, 0.05-0.15 для светлого\n\n"
-        "<i>Меньшее значение = больше объектов будет найдено</i>",
-        parse_mode="HTML",
-        reply_markup=keyboard
+        f"📸 Фото получено! Размер: {w}x{h}\n\n"
+        f"Теперь выберите чувствительность детекции:",
+        reply_markup=get_sensitivity_keyboard()
     )
+
+    await state.update_data(temp_photo_path=temp_path)
     await state.set_state(PhotoAnalysis.waiting_for_threshold)
+
+
+def get_sensitivity_keyboard():
+    """Клавиатура с предустановленными значениями чувствительности"""
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text="🔍 Высокая (0.005)"),
+                KeyboardButton(text="⭐ Средняя (0.01)")
+            ],
+            [
+                KeyboardButton(text="✨ Низкая (0.05)"),
+                KeyboardButton(text="💫 Очень низкая (0.1)")
+            ],
+            [
+                KeyboardButton(text="✏️ Ввести своё значение")
+            ]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
 
 
 @router.message(PhotoAnalysis.waiting_for_threshold)
 async def process_threshold(message: Message, state: FSMContext):
-    try:
-        threshold = float(message.text.strip())
-        if not 0.01 <= threshold <= 1.0:
-            raise ValueError
-    except Exception:
+    text = message.text.strip()
+
+    # Обработка предустановленных значений
+    threshold_map = {
+        "🔍 Высокая (0.005)": 0.005,
+        "⭐ Средняя (0.01)": 0.01,
+        "✨ Низкая (0.05)": 0.05,
+        "💫 Очень низкая (0.1)": 0.1,
+    }
+
+    if text in threshold_map:
+        threshold = threshold_map[text]
+    elif text == "✏️ Ввести своё значение":
         await message.answer(
-            "❌ Пожалуйста, введи число от 0.01 до 1.0\n"
-            "Например: 0.01, 0.05, 0.1"
+            "Введите число от 0.001 до 0.5\n"
+            "💡 Чем меньше число, тем больше объектов будет найдено\n\n"
+            "Примеры:\n"
+            "• 0.005 — очень высокая чувствительность\n"
+            "• 0.01 — высокая чувствительность\n"
+            "• 0.05 — средняя чувствительность\n"
+            "• 0.1 — низкая чувствительность",
+            reply_markup=ReplyKeyboardRemove()
         )
         return
+    else:
+        try:
+            threshold = float(text)
+            if not 0.001 <= threshold <= 0.5:
+                raise ValueError
+        except Exception:
+            await message.answer(
+                "❌ Пожалуйста, введите число от 0.001 до 0.5\n"
+                "Например: 0.005, 0.01, 0.05",
+                reply_markup=get_sensitivity_keyboard()
+            )
+            return
 
     data = await state.get_data()
     photo_path = data.get("temp_photo_path")
@@ -84,8 +130,9 @@ async def process_threshold(message: Message, state: FSMContext):
         return
 
     await message.answer(
-        f"🔍 Порог: <b>{threshold:.3f}</b>\n"
-        "Анализирую изображение... (это может занять 5–15 секунд)",
+        f"🔍 Чувствительность: <b>{threshold:.3f}</b>\n"
+        "Анализирую изображение... (это может занять 5–15 секунд)\n\n"
+        "⏳ Пожалуйста, подождите...",
         parse_mode="HTML",
         reply_markup=ReplyKeyboardRemove()
     )
@@ -98,63 +145,69 @@ async def process_threshold(message: Message, state: FSMContext):
             threshold=threshold
         )
 
-        output_dir = Path("annotated_frames")
-
         if not saved_files:
+            # Если ничего не найдено, предлагаем другие значения
             await message.answer(
-                "🔍 Ничего интересного не найдено с таким порогом.\n"
-                "💡 Попробуй меньшее значение (например, 0.01 или 0.005)"
+                "🔍 <b>Ничего не найдено</b>\n\n"
+                "Попробуйте:\n"
+                "• Выбрать более высокую чувствительность (меньшее число)\n"
+                "• Отправить фото с более контрастным небом\n"
+                "• Использовать фото с более яркими объектами\n\n"
+                "Отправьте новое фото или нажмите /start",
+                parse_mode="HTML"
             )
         else:
             # Отправляем найденные аннотированные изображения
-            for file_path in saved_files[:5]:  # Ограничиваем до 5 файлов, чтобы не спамить
-                if os.path.exists(file_path):
+            sent_count = 0
+            for file_path in saved_files[:5]:
+                if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
                     file_name = Path(file_path).name
                     await message.answer_photo(
                         photo=FSInputFile(file_path),
-                        caption=f"📷 {file_name}"
+                        caption=f"📷 Результат анализа"
                     )
+                    sent_count += 1
+
+            if sent_count == 0:
+                await message.answer("⚠️ Не удалось отправить результаты анализа.")
 
             # Отправляем статистику
-            if stats and stats["total_objects"] > 0:
-                stats_text = "<b>📊 Статистика анализа:</b>\n"
-                stats_text += f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                stats_text += f"📁 Обработано кадров: {stats['frames_processed']}\n"
-                stats_text += f"✨ Всего объектов: {stats['total_objects']}\n\n"
+            if stats and stats.get("total_objects", 0) > 0:
+                stats_text = "<b>📊 Результаты анализа:</b>\n"
+                stats_text += "━━━━━━━━━━━━━━━━━━━━━━\n"
+                stats_text += f"📁 Обработано: {stats['frames_processed']} кадр(ов)\n"
+                stats_text += f"✨ Найдено объектов: {stats['total_objects']}\n\n"
 
-                stats_text += "<b>🔭 Обнаруженные объекты:</b>\n"
-                for typ, cnt in stats["by_type"].items():
-                    # Эмодзи для разных типов объектов
-                    emoji = {
-                        "звезда (точечная)": "⭐",
-                        "звезда с дифракцией / кластер": "🌟",
-                        "галактика / крупный кластер": "🌌",
-                        "вспышка / спутник / мусор / артефакт": "💥",
-                        "вспышка (вытянутый)": "✨",
-                        "мусор / артефакт": "🗑️",
-                        "неизвестно": "❓"
-                    }.get(typ, "•")
-                    stats_text += f"{emoji} {typ}: {cnt} шт.\n"
+                if stats.get("by_type"):
+                    stats_text += "<b>🔭 Обнаруженные объекты:</b>\n"
+                    for typ, cnt in stats["by_type"].items():
+                        emoji = {
+                            "звезда (точечная)": "⭐",
+                            "звезда с дифракцией / кластер": "🌟",
+                            "галактика / крупный кластер": "🌌",
+                            "вспышка / спутник / мусор / артефакт": "💥",
+                            "вспышка (вытянутый)": "✨",
+                            "мусор / артефакт": "🗑️",
+                            "неизвестно": "❓"
+                        }.get(typ, "•")
+                        stats_text += f"{emoji} {typ}: {cnt} шт.\n"
 
                 await message.answer(stats_text, parse_mode="HTML")
-            elif stats:
-                await message.answer(
-                    "🔍 Объекты не найдены с таким порогом.\n"
-                    "💡 Попробуй уменьшить порог для более чувствительного поиска."
-                )
-            else:
-                await message.answer(" Анализ завершён.")
 
     except Exception as e:
+        error_msg = str(e)
         await message.answer(
-            f" Произошла ошибка:\n<code>{str(e)}</code>\n\n"
-            f"Попробуй:\n"
+            f"❌+ <b>Произошла ошибка:</b>\n"
+            f"<code>{error_msg[:200]}</code>\n\n"
+            f"Попробуйте:\n"
             f"• Отправить другое фото\n"
-            f"• Изменить порог\n"
+            f"• Выбрать другую чувствительность\n"
             f"• Связаться с разработчиком",
             parse_mode="HTML"
         )
         print(f"Ошибка при анализе: {e}")
+        import traceback
+        traceback.print_exc()
 
     finally:
         # Удаляем временный файл
